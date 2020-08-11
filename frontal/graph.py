@@ -1,4 +1,5 @@
 from networkx.algorithms.traversal.edgedfs import edge_dfs
+from networkx.algorithms.simple_paths import all_simple_paths
 from typing import List, Tuple
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -64,129 +65,163 @@ def is_ancestor(G: nx.DiGraph,
         return False
 
 
-def is_end_node(graph: nx.DiGraph,
-                node: str) -> bool:
-    """Check if a node is an end node. Doesn't matter whether it's in or out
+def have_collider(path: nx.DiGraph) -> bool:
+    """Determine if a given path have collider in it
 
     Args:
-        graph (nx.DiGraph): graph of networkx     
-        node (str): node of networkx
+        path (nx.DiGraph): directed path
 
     Returns:
-        bool: whether it's end node
+        bool: whether the path have a collider
     """
-
-    if graph.out_degree(node) + graph.in_degree(node) == 1:
-        return True
-
+    for node in path.nodes():
+        if path.in_degree(node) > 1:
+            print(f"Path {path.nodes()} have collider at {node}.")
+            return True
     return False
 
 
-def remove_extra_branches(path: nx.DiGraph,
-                          end_nodes: List[str]) -> nx.DiGraph:
-    """Remove end node that's not in the direct pathway from start to end
+def get_collider(path: nx.DiGraph) -> List:
+    """Find and return any collider node in the path (graph)
 
     Args:
-        path (nx.DiGraph): path in graph format, potentially have extra branches
-        that the end nodes are not start or end
-        end_nodes (List[str]): start and end nodes
+        path (nx.DiGraph): directed path
 
     Returns:
-        nx.DiGraph: cleaned direct graph from start to end
+        List: list fo collider node. if no collider, then it's empty list
     """
 
-    new_path = deepcopy(path)
+    colliders = []
     for node in path.nodes():
-        if (node not in end_nodes) \
-                and (is_end_node(graph=new_path, node=node)):
-            new_path.remove_node(node)
+        if path.in_degree(node) > 1:
+            print(f"Path {path.nodes()} have collider at {node}.")
+            colliders.append(node)
+    return colliders
 
-    return new_path
 
-
-def find_all_paths(edges: Tuple,
-                   nodes_count: int,
-                   start_node: str,
-                   end_node: str) -> List:
-    """Find all path from start_node to end_node
+def replicate_edges(directed_graph: nx.DiGraph,
+                    undirected_graph: List,
+                    causal_node: str,
+                    outcome_node: str) -> nx.DiGraph:
+    """Indicate the direction of in path from causal variable to outcome
+    variable by looking at the orignal DiGraph, and copy over the direction
 
     Args:
-        edges (Tuple): deep first search edges
-        nodes_count (int): how many total nodes
-        start_node (str): start/parent node that could be the cause
-        end_node (str): end/child node that may be the result
+        directed_graph (nx.DiGraph): original directed graph
+        undirected_graph (List): the simple_path generated path from undirected
+        graph. This is just a ordered list, so direction for edges
+        causal_node (str): causal variable
+        outcome_node (str): outcome variable
 
     Returns:
-        List: a list of all the path from start node to end node
+        nx.DiGraph: a directed graph with direction of causal relationship
     """
-    paths = []
     path = nx.DiGraph()
 
-    for index, edge in enumerate(edges):
+    # generate all the potential edges in List of Tuple format
+    undirected_edges = []
+    for index in range(1, len(undirected_graph)):
+        undirected_edges.append(
+            (undirected_graph[index-1], undirected_graph[index]))
+        undirected_edges.append(
+            (undirected_graph[index], undirected_graph[index-1]))
 
+    # generate all the directed edges in the original graph in List of Tuple
+    # format
+    directed_edges = directed_graph.edges()
+
+    # look through the potential directed edges, and if similar one exist in
+    # directed graph, then grab the correct direciton and update the DiGraph
+    for edge in undirected_edges:
         start, end = edge
+        if edge in directed_edges:
+            path.add_edge(start, end)
 
-        # add nodes
-        if not path.has_node(start):
-            path.add_node(start)
-        if not path.has_node(end):
-            path.add_node(end)
+    return path
 
-        # add edges
-        path.add_edge(start, end)
 
-        # find the nodes with only one nodes connected to it
-        path_count = index + 1
-        end_nodes = [x for x in path.nodes()
-                     if is_end_node(graph=path, node=x)]
+def get_all_path(G: nx.DiGraph,
+                 causal_node: str,
+                 outcome_node: str) -> List:
+    """Find all the pathways from causal variable to outcome variable.
 
-        # if end nodes is the same, then it's one version of the paths
-        if (start_node in end_nodes) and (end_node in end_nodes):
-            path = remove_extra_branches(path=path,
-                                         end_nodes=[start_node, end_node])
-            draw_graph(G=path, path=f"graphs/{len(paths)+1}.png")
-            paths.append(path)
-            path.clear()
+    Args:
+        G (nx.DiGraph): the directed graph that have causal and outcome 
+        variable included
+        causal_node (str): causal variable name
+        outcome_node (str): outcome variable name
+
+    Returns:
+        List: List of nx.DiGraph, each represent a direct path from causal
+        variable to outcome variable
+    """
+
+    # first convert the directed graph to undirected, because the function
+    # all_simple_path is a nice to find all the non-branching paths from 
+    # causal variable to outcome variable
+    un_directed_graph = G.to_undirected()
+    un_directed_paths = [x for x in all_simple_paths(G=un_directed_graph,
+                                                     source=causal_node,
+                                                     target=outcome_node)]
+    
+    # once all the paths are found, need to add directions on the edges
+    # this is done by looking at the original directed graph, and copy the
+    # appropriate directions
+    paths = []
+    for i, path_nodes in enumerate(un_directed_paths):
+        path = replicate_edges(directed_graph=G,
+                               undirected_graph=path_nodes,
+                               causal_node=causal_node,
+                               outcome_node=outcome_node)
+
+        draw_graph(G=path, path=f"graphs/{i}.png")
+        paths.append(path)
 
     return paths
 
 
 def met_backdoor_criterion(G: nx.DiGraph,
-                           start_node: str,
-                           end_node: str) -> bool:
+                           causal_node: str,
+                           outcome_node: str) -> bool:
     # edge cases
     if not dag.is_directed_acyclic_graph(G):
         print("The graph is not a Directed Acyclic Graph!")
         return False
 
     if not is_ancestor(G=G,
-                       anscestor=start_node,
-                       descendent=end_node):
-        print("Cause node is not the ancestor of end_node!")
+                       anscestor=causal_node,
+                       descendent=outcome_node):
+        print("Cause node is not the ancestor of outcome_node!")
         return False
 
-    # determine using Pearl backdoor criteria (p109)
-    # need to collect all edges, not just A -> B
-    edges = [x for x in edge_dfs(G=G)]
-    paths = find_all_paths(edges=edges,
-                           nodes_count=len(G),
-                           start_node=start_node,
-                           end_node=end_node)
+    # get all paths
+    paths = get_all_path(G=G,
+                         causal_node=causal_node,
+                         outcome_node=outcome_node)
+
+    # report if path have collider
+    colliders = []
+    for path in paths:
+        colliders.extend(get_collider(path))
 
     return True
 
 
 def main():
-    nodes = ['A', 'C', 'D', 'O', 'Y']
-    edges = [('A', 'C'), ('C', 'O'), ('C', 'D'), ('D', 'Y'), ('O', 'Y')]
+    # nodes = ['A', 'C', 'D', 'O', 'Y']
+    # edges = [('A', 'C'), ('C', 'O'), ('C', 'D'), ('D', 'Y'), ('O', 'Y')]
+
+    nodes = ['C', 'D', 'B', 'Y', 'G', 'F', 'A', 'U', 'V']
+    edges = [('C', 'D'), ('U', 'B'), ('U', 'A'), ('B', 'D'), ('D', 'Y'),
+             ('G', 'Y'), ('F', 'Y'), ('V', 'F'), ('V', 'A'), ('A', 'D')]
 
     # networkx use large G as graph, not lower case
     G = make_graph(nodes=nodes,
                    edges=edges)
 
     print(met_backdoor_criterion(G=G,
-                                 start_node='D',
-                                 end_node='Y'))
+                                 causal_node='D',
+                                 outcome_node='Y'))
 
 
 if __name__ == "__main__":
