@@ -46,19 +46,19 @@ def make_graph(nodes: List,
 
 def is_ancestor(G: nx.DiGraph,
                 anscestor: str,
-                descendent: str) -> bool:
-    """Check if the anscestor/descendent relationship exist
+                descendant: str) -> bool:
+    """Check if the anscestor/descendant relationship exist
 
     Args:
         G (nx.DiGraph): networkx graph
         anscestor (str): anscestor node in question
-        descendent (str): descendent node in question
+        descendant (str): descendant node in question
 
     Returns:
         bool: whether the relationship is correct
     """
 
-    anscestors = dag.ancestors(G, descendent)
+    anscestors = dag.ancestors(G, descendant)
     if anscestor in anscestors:
         return True
     else:
@@ -157,13 +157,13 @@ def get_all_path(G: nx.DiGraph,
     """
 
     # first convert the directed graph to undirected, because the function
-    # all_simple_path is a nice to find all the non-branching paths from 
+    # all_simple_path is a nice to find all the non-branching paths from
     # causal variable to outcome variable
     un_directed_graph = G.to_undirected()
     un_directed_paths = [x for x in all_simple_paths(G=un_directed_graph,
                                                      source=causal_node,
                                                      target=outcome_node)]
-    
+
     # once all the paths are found, need to add directions on the edges
     # this is done by looking at the original directed graph, and copy the
     # appropriate directions
@@ -181,47 +181,95 @@ def get_all_path(G: nx.DiGraph,
 
 
 def met_backdoor_criterion(G: nx.DiGraph,
+                           paths: List[nx.DiGraph],
                            causal_node: str,
-                           outcome_node: str) -> bool:
-    # edge cases
+                           outcome_node: str,
+                           condition_nodes: List,
+                           unobserved_nodes: set = set(),
+                           ) -> bool:
+
+    # must be acyclic graph
     if not dag.is_directed_acyclic_graph(G):
         print("The graph is not a Directed Acyclic Graph!")
         return False
 
+    # if causal variable is not a anscestor of outcome variable
     if not is_ancestor(G=G,
                        anscestor=causal_node,
-                       descendent=outcome_node):
+                       descendant=outcome_node):
         print("Cause node is not the ancestor of outcome_node!")
         return False
 
-    # get all paths
-    paths = get_all_path(G=G,
-                         causal_node=causal_node,
-                         outcome_node=outcome_node)
+    # check if any of the condition_nodes is in an unobserved node
+    # assuming unobserved nodes cannot be conditioned on
+    is_unobserved = any(node in unobserved_nodes for node in condition_nodes)
+    if is_unobserved:
+        print(f"{condition_nodes} contain unobservable variable.")
+        return False
+
+    # if any condition variable is descendant of causal_node
+    # condition on a descendant of causal variable would diminish causal effect
+    for condition_node in condition_nodes:
+        if is_ancestor(G=G,
+                       anscestor=causal_node,
+                       descendant=condition_node):
+            return False
 
     # report if path have collider
     colliders = []
     for path in paths:
         colliders.extend(get_collider(path))
 
+    # if any of the descendant of collider is conditioned
+    for condition_node in condition_nodes:
+        for collider in colliders:
+            collider_descendants = dag.descendants(G, collider)
+            if condition_node in collider_descendants:
+                print(f"{condition_node} is a descendant of collider {collider}")
+                return False
+
+    # if only one condition variable and it's a collider
+    is_collider = any(node in condition_nodes for node in colliders)
+    if is_collider and len(condition_nodes) == 1:
+        print("Conditioning on a collider variable does not block the path.")
+        return False
+
+    # TODO check all backdoor criterion to make sure the conditioning variable
+    # will block all backdoor paths
+
     return True
 
 
 def main():
-    # nodes = ['A', 'C', 'D', 'O', 'Y']
-    # edges = [('A', 'C'), ('C', 'O'), ('C', 'D'), ('D', 'Y'), ('O', 'Y')]
+    # nodes = ['C', 'D', 'B', 'Y', 'G', 'F', 'A', 'U', 'V']
+    # edges = [('C', 'D'), ('U', 'B'), ('U', 'A'), ('B', 'D'), ('D', 'Y'),
+    #          ('G', 'Y'), ('F', 'Y'), ('V', 'F'), ('V', 'A'), ('A', 'D')]
 
-    nodes = ['C', 'D', 'B', 'Y', 'G', 'F', 'A', 'U', 'V']
-    edges = [('C', 'D'), ('U', 'B'), ('U', 'A'), ('B', 'D'), ('D', 'Y'),
-             ('G', 'Y'), ('F', 'Y'), ('V', 'F'), ('V', 'A'), ('A', 'D')]
+    # info to construct a graph
+    nodes = ['D', 'Y', 'V', 'Y2', 'Y1', 'U']
+    edges = [('D', 'Y'), ('V', 'D'), ('V', 'Y2'), ('Y2', 'Y1'), ('Y1', 'Y'),
+             ('U', 'Y2'), ('U', 'Y')]
+    # needs these to check for backdoor criterion
+    causal_node = 'D'
+    outcome_node = 'Y'
+    condition_nodes=['Y1']
+    unobserved_nodes=['V', 'U']
 
-    # networkx use large G as graph, not lower case
+    # networkx use large G as graph, not lower case. follow convention here
     G = make_graph(nodes=nodes,
                    edges=edges)
 
+    # get all paths
+    paths = get_all_path(G=G,
+                         causal_node=causal_node,
+                         outcome_node=outcome_node)
+
     print(met_backdoor_criterion(G=G,
-                                 causal_node='D',
-                                 outcome_node='Y'))
+                                 paths=paths,
+                                 causal_node=causal_node,
+                                 outcome_node=outcome_node,
+                                 condition_nodes=condition_nodes,
+                                 unobserved_nodes=unobserved_nodes))
 
 
 if __name__ == "__main__":
