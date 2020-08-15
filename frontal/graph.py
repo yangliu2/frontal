@@ -44,6 +44,30 @@ def make_graph(nodes: List,
     return G
 
 
+def list_to_path(node_list: List) -> nx.DiGraph:
+    """Convert a list of nodes to directed graph. Edges will be going from 
+    first to second node, and so on.
+
+    Args:
+        node_list (List): list of node in strings
+
+    Returns:
+        nx.DiGraph: path expressed in DiGraph format. Ignoring the original 
+        path direction, but use the newly constructed direction for easier 
+        access of ancestor and descendants.
+    """
+    path = nx.DiGraph()
+    path.add_nodes_from(node_list)
+    for i, node in enumerate(node_list):
+        # skip first node
+        if i == 0:
+            continue
+
+        # start with second node
+        path.add_edge(node_list[i-1], node)
+    return path
+
+
 def is_ancestor(G: nx.DiGraph,
                 anscestor: str,
                 descendant: str) -> bool:
@@ -142,7 +166,7 @@ def replicate_edges(directed_graph: nx.DiGraph,
 
 def get_all_path(G: nx.DiGraph,
                  causal_node: str,
-                 outcome_node: str) -> List:
+                 outcome_node: str) -> Tuple:
     """Find all the pathways from causal variable to outcome variable.
 
     Args:
@@ -167,7 +191,7 @@ def get_all_path(G: nx.DiGraph,
     # once all the paths are found, need to add directions on the edges
     # this is done by looking at the original directed graph, and copy the
     # appropriate directions
-    paths = []
+    directed_paths = []
     for i, path_nodes in enumerate(un_directed_paths):
         path = replicate_edges(directed_graph=G,
                                undirected_graph=path_nodes,
@@ -175,18 +199,42 @@ def get_all_path(G: nx.DiGraph,
                                outcome_node=outcome_node)
 
         draw_graph(G=path, path=f"graphs/{i}.png")
-        paths.append(path)
+        directed_paths.append(path)
 
-    return paths
+    # make an acutal un_directed_graph
+    un_directed_paths = [list_to_path(x) for x in un_directed_paths]
+
+    return directed_paths, un_directed_paths
 
 
 def met_backdoor_criterion(G: nx.DiGraph,
-                           paths: List[nx.DiGraph],
+                           directed_paths: List[nx.DiGraph],
+                           undirected_paths: List[nx.DiGraph],
                            causal_node: str,
                            outcome_node: str,
                            condition_nodes: List,
                            unobserved_nodes: set = set(),
                            ) -> bool:
+    """check if the backdoor criterion is met in Morgan & Winship book (p109). 
+
+    Args:
+        G (nx.DiGraph): the whole directed graph
+        directed_paths (List[nx.DiGraph]): the directed paths are used to check
+        for collider variables
+        undirected_paths (List[nx.DiGraph]): undirected paths are used to check 
+        for anscestors of collider variables, and see if they are blocking 
+        collider variable
+        causal_node (str): causal variable
+        outcome_node (str): outcome variable
+        condition_nodes (List): condition variable 
+        unobserved_nodes (set, optional): if the graph indicate a set of 
+        unobserved variables, then use it to check whether they can be 
+        conditioned on. Defaults to set().
+
+    Returns:
+        bool: indicate whether the list of variables to be conditioned 
+        satisfy the backdoor criterion
+    """
 
     # must be acyclic graph
     if not dag.is_directed_acyclic_graph(G):
@@ -217,55 +265,76 @@ def met_backdoor_criterion(G: nx.DiGraph,
 
     # report if path have collider
     colliders = []
-    for path in paths:
+    for path in directed_paths:
         colliders.extend(get_collider(path))
 
-    # if any of the descendant of collider is conditioned
-    for condition_node in condition_nodes:
-        for collider in colliders:
-            collider_descendants = dag.descendants(G, collider)
-            if condition_node in collider_descendants:
-                print(f"{condition_node} is a descendant of collider {collider}")
-                return False
+    # if any of the collider or descendant of collider is conditioned, check if 
+    # there is any other variable in the set that's going to block the collider
+    # if collider is the only variable in the set, then return false
+    for undirected_path in undirected_paths:
+        for condition_node in condition_nodes:
+            for collider in colliders:
+                if collider in undirected_path.nodes():
+                    print(
+                        f"collider {collider}, path {undirected_path.edges()}")
+                    # need to actually check the directed path for collider 
+                    # descendants
+                    index = undirected_paths.index(undirected_path)
+                    directed_path = directed_paths[index]
+                    collider_descendants = dag.descendants(
+                        directed_path, collider)
 
-    # if only one condition variable and it's a collider
-    is_collider = any(node in condition_nodes for node in colliders)
-    if is_collider and len(condition_nodes) == 1:
-        print("Conditioning on a collider variable does not block the path.")
-        return False
+                    collider_anscestors = dag.ancestors(
+                        undirected_path, collider)
 
-    # TODO check all backdoor criterion to make sure the conditioning variable
-    # will block all backdoor paths
+                    blocked_collider = any(
+                        x in collider_anscestors for x in condition_nodes)
+                    
+                    # check both conditioned variable and it's descedants
+                    if (condition_node == collider) \
+                            or (condition_node in collider_descendants):
+                        if len(condition_nodes) == 1:
+                            print(f"Conditioning on a collider or descendant "
+                                  f"of the collider variable does not block the"
+                                  f" path.")
+                            return False
+                        elif len(condition_nodes) > 1 and (blocked_collider):
+                            print(f"collider {collider} was blocked")
+                            return True
+                        else:
+                            print("something wrong with the collider blocking "
+                                 f"path")
 
     return True
 
 
 def main():
-    # nodes = ['C', 'D', 'B', 'Y', 'G', 'F', 'A', 'U', 'V']
-    # edges = [('C', 'D'), ('U', 'B'), ('U', 'A'), ('B', 'D'), ('D', 'Y'),
-    #          ('G', 'Y'), ('F', 'Y'), ('V', 'F'), ('V', 'A'), ('A', 'D')]
+    nodes = ['C', 'D', 'B', 'Y', 'G', 'F', 'A', 'U', 'V']
+    edges = [('C', 'D'), ('U', 'B'), ('U', 'A'), ('B', 'D'), ('D', 'Y'),
+             ('G', 'Y'), ('F', 'Y'), ('V', 'F'), ('V', 'A'), ('A', 'D')]
 
-    # info to construct a graph
-    nodes = ['D', 'Y', 'V', 'Y2', 'Y1', 'U']
-    edges = [('D', 'Y'), ('V', 'D'), ('V', 'Y2'), ('Y2', 'Y1'), ('Y1', 'Y'),
-             ('U', 'Y2'), ('U', 'Y')]
+    # # info to construct a graph
+    # nodes = ['D', 'Y', 'V', 'Y2', 'Y1', 'U']
+    # edges = [('D', 'Y'), ('V', 'D'), ('V', 'Y2'), ('Y2', 'Y1'), ('Y1', 'Y'),
+    #          ('U', 'Y2'), ('U', 'Y')]
     # needs these to check for backdoor criterion
     causal_node = 'D'
     outcome_node = 'Y'
-    condition_nodes=['Y1']
-    unobserved_nodes=['V', 'U']
+    condition_nodes = ['A', 'B']
+    unobserved_nodes = ['V', 'U']
 
     # networkx use large G as graph, not lower case. follow convention here
     G = make_graph(nodes=nodes,
                    edges=edges)
 
     # get all paths
-    paths = get_all_path(G=G,
-                         causal_node=causal_node,
-                         outcome_node=outcome_node)
+    directed_paths, undirected_paths = get_all_path(G=G,
+                                                    causal_node=causal_node,
+                                                    outcome_node=outcome_node)
 
     print(met_backdoor_criterion(G=G,
-                                 paths=paths,
+                                 directed_paths=directed_paths,
+                                 undirected_paths=undirected_paths,
                                  causal_node=causal_node,
                                  outcome_node=outcome_node,
                                  condition_nodes=condition_nodes,
